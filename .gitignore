@@ -78,8 +78,9 @@ tmp/
 temp/
 *.tmp
 
-# Data files (large datasets)
-data/
+# Data files (large datasets) - only root-level data folder
+# Use /data/ to avoid ignoring src/aetheris_oracle/data/
+/data/
 *.csv
 *.parquet
 *.feather
