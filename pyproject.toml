@@ -1,0 +1,16 @@
+[project]
+name = "price-predicter"
+version = "0.1.0"
+description = "Aetheris Oracle v10.0 skeleton for probabilistic price forecasting"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Aetheris Team" }]
+license = { text = "MIT" }
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

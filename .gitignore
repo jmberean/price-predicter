@@ -1,0 +1,104 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+
+# Claude Code
+.claude/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+artifacts/
+checkpoints/
+
+# Logs
+*.log
+logs/
+
+# Calibration state (may contain sensitive data)
+calibration.json
+*.calibration.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Data files (large datasets)
+data/
+*.csv
+*.parquet
+*.feather
+
+# Generated outputs
+outputs/
+*.png
+*.jpg
+
+# Model artifacts (can be large)
+# Uncomment if you don't want to track artifacts
+# artifacts/
+
+# Experiment tracking
+wandb/
+mlruns/
+.mlflow/
+
+# Test outputs
+test-results/
+test-results.xml
+profile.stats
