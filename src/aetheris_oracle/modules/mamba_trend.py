@@ -36,7 +36,7 @@ class MambaTrendConfig:
 
     d_model: int = 128
     n_layers: int = 4
-    horizon: int = 14
+    horizon: int = 90
     input_dim: int = 5  # returns + regime features
     learning_rate: float = 0.001
     artifact_path: str = "artifacts/mamba_trend_state.pt"
@@ -261,9 +261,14 @@ class MambaTrendWrapper:
         with torch.no_grad():
             trend = self.model(x, horizon=horizon)
 
-        # Convert to cumulative trend from last close
+        # Convert incremental returns to cumulative trend from last close
+        # Model outputs day-to-day returns, need to accumulate for price levels
         trend_list = trend[0].cpu().numpy().tolist()
-        cumulative_trend = [closes_list[-1] + trend_list[i] for i in range(horizon)]
+        cumulative = 0.0
+        cumulative_trend = []
+        for i in range(horizon):
+            cumulative += trend_list[i]
+            cumulative_trend.append(closes_list[-1] + cumulative)
 
         return cumulative_trend
 

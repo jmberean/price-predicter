@@ -25,7 +25,7 @@ from torchdiffeq import odeint
 class FMGPConfig:
     """Configuration for FM-GP residual generator."""
 
-    horizon: int = 14
+    horizon: int = 90
     cond_dim: int = 10  # regime + vol + MM features
     hidden_dims: List[int] = None
     time_embed_dim: int = 64
@@ -413,7 +413,8 @@ class FMGPResidualEngine:
             )  # (1, num_paths, horizon)
 
         # Convert back to list
-        paths_array = paths_tensor[0].cpu().numpy()  # (num_paths, horizon)
+        paths_array = paths_tensor[0].cpu().numpy()  # (num_paths, model_horizon)
+        model_horizon = paths_array.shape[1]
 
         # IMPORTANT: Scale residuals by volatility path (like legacy ResidualGenerator)
         # Legacy scales by: std + vol_path * 0.05
@@ -423,9 +424,18 @@ class FMGPResidualEngine:
             scaled_path = []
             for t in range(horizon):
                 vol_scale = vol_padded[min(t, len(vol_padded) - 1)] * 0.05
+                # If horizon exceeds model's trained horizon, extrapolate using last values
+                if t < model_horizon:
+                    base_residual = path[t]
+                else:
+                    # Extrapolate: use last model value + random walk component
+                    # Scale down the extrapolation noise for stability
+                    last_val = path[model_horizon - 1]
+                    decay = 0.95 ** (t - model_horizon + 1)
+                    base_residual = last_val * decay
                 # Scale the FM-GP residual by volatility to match legacy magnitude
                 # Increased multiplier from 20x to 50x for better spread matching
-                scaled_residual = path[t] * (1.0 + vol_scale * 50.0)
+                scaled_residual = base_residual * (1.0 + vol_scale * 50.0)
                 scaled_path.append(scaled_residual)
             paths_list.append(scaled_path)
 

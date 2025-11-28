@@ -121,6 +121,7 @@ def prepare_ncc_training_data(
 
     # Use SOTA forecast engine to generate base quantiles (without NCC calibration)
     # This trains NCC to calibrate SOTA forecasts, not legacy
+    # IMPORTANT: Must enable ALL SOTA components to match Full SOTA inference distribution
     engine = ForecastEngine(
         connector=connector,
         seed=42,
@@ -128,11 +129,12 @@ def prepare_ncc_training_data(
         use_diff_greeks=True,
         use_fm_gp_residuals=True,
         use_neural_rough_vol=True,
-        use_neural_jumps=False,
+        use_neural_jumps=True,  # Must be True to match Full SOTA configuration
         use_mamba_trend=True,
         diff_greeks_artifact_path="artifacts/diff_greeks.pt",
         fmgp_artifact_path="artifacts/fmgp_residuals.pt",
         neural_vol_artifact_path="artifacts/neural_rough_vol.pt",
+        neural_jump_artifact_path="artifacts/neural_jump_sde.pt",
         mamba_artifact_path="artifacts/mamba_trend.pt",
     )
 

@@ -27,7 +27,7 @@ class NeuralRoughVolConfig:
     """Configuration for Neural Rough Volatility."""
 
     hurst: float = 0.1  # Hurst parameter (empirically ≈ 0.1 for rough vol)
-    horizon: int = 14
+    horizon: int = 90
     cond_dim: int = 10  # Conditioning features
     hidden_dim: int = 128
     n_vol_params: int = 3  # xi (vol-of-vol), rho (correlation), fwd_var

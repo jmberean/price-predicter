@@ -41,8 +41,8 @@ class CCXTOHLCVConnector(OHLCVConnector):
         if not candles and "-" in asset_id:
             try:
                 ticker = yf.Ticker(asset_id)  # e.g., "BTC-USD"
-                days = max(1, (end - start).days + 1)
-                hist = ticker.history(period=f"{days}d")
+                # Use start/end parameters to get historical data, not just recent
+                hist = ticker.history(start=start, end=end)
                 if not hist.empty:
                     timestamps = [dt.to_pydatetime() for dt in hist.index]
                     closes = hist['Close'].tolist()
