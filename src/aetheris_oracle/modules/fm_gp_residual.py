@@ -10,7 +10,8 @@ encoding temporal correlation structure into the prior.
 
 import json
 import math
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -21,17 +22,44 @@ import torch.nn.functional as F
 from torchdiffeq import odeint
 
 
+def _get_default_horizon() -> int:
+    """Get default horizon from environment or use 90."""
+    return int(os.getenv("TRAINING_HORIZON", "90"))
+
+
+def _get_fmgp_time_embed_dim() -> int:
+    """Get FMGP time_embed_dim from tuned env var or use default."""
+    return int(os.getenv("TUNING_FMGP_TIME_EMBED", "64"))
+
+
+def _get_fmgp_cfg_dropout() -> float:
+    """Get FMGP cfg_dropout from tuned env var or use default."""
+    return float(os.getenv("TUNING_FMGP_DROPOUT", "0.1"))
+
+
+def _get_fmgp_learning_rate() -> float:
+    """Get FMGP learning_rate from tuned env var or use default."""
+    return float(os.getenv("TUNING_FMGP_LR", "0.001"))
+
+
+def _get_fmgp_epochs() -> int:
+    """Get FMGP training epochs from tuned env var or use default."""
+    return int(os.getenv("TUNING_FMGP_EPOCHS", "50"))
+
+
 @dataclass
 class FMGPConfig:
     """Configuration for FM-GP residual generator."""
 
-    horizon: int = 90
+    horizon: int = field(default_factory=_get_default_horizon)
     cond_dim: int = 10  # regime + vol + MM features
     hidden_dims: List[int] = None
-    time_embed_dim: int = 64
+    time_embed_dim: int = field(default_factory=_get_fmgp_time_embed_dim)
     n_mixtures: int = 4  # Spectral mixture kernel components
-    cfg_dropout: float = 0.1  # Classifier-free guidance dropout
-    learning_rate: float = 0.001
+    cfg_dropout: float = field(default_factory=_get_fmgp_cfg_dropout)
+    learning_rate: float = field(default_factory=_get_fmgp_learning_rate)
+    residual_scale: float = 50.0  # Scaling factor for residuals (derived empirically)
+    default_epochs: int = field(default_factory=_get_fmgp_epochs)
     artifact_path: str = "artifacts/fm_gp_state.pt"
 
     def __post_init__(self):
@@ -261,8 +289,9 @@ class FMGPResidualGenerator(nn.Module):
                 t = torch.full((x.shape[0],), t_scalar, device=x.device)
                 return self.flow_net(x, t, cond_expanded)
 
-            t_span = torch.linspace(0, 1, 10, device=device)  # Integration steps
-            paths = odeint(ode_func, x0, t_span)[-1]  # Take final state
+            t_span = torch.linspace(0, 1, 50, device=device)  # Integration steps (50 for accuracy)
+            # Use fixed-step RK4 to avoid 'underflow in dt' errors from adaptive solvers
+            paths = odeint(ode_func, x0, t_span, method='rk4')[-1]  # Take final state
 
             # Reshape to (batch, n_paths, horizon)
             paths = paths.view(batch_size, n_paths, self.config.horizon)
@@ -428,14 +457,20 @@ class FMGPResidualEngine:
                 if t < model_horizon:
                     base_residual = path[t]
                 else:
-                    # Extrapolate: use last model value + random walk component
-                    # Scale down the extrapolation noise for stability
+                    # Extrapolate beyond model horizon with random walk
+                    # DO NOT decay to zero - maintain uncertainty for long horizons
                     last_val = path[model_horizon - 1]
-                    decay = 0.95 ** (t - model_horizon + 1)
-                    base_residual = last_val * decay
+                    # Use slow mean reversion instead of aggressive decay
+                    # This prevents artificial narrowing of forecast cones
+                    steps_beyond = t - model_horizon + 1
+                    mean_reversion = 0.98 ** steps_beyond  # Slow reversion to mean
+                    # Add diffusion to maintain variance
+                    import random
+                    diffusion = random.gauss(0, 0.01) * (steps_beyond ** 0.5)
+                    base_residual = last_val * mean_reversion + diffusion
                 # Scale the FM-GP residual by volatility to match legacy magnitude
-                # Increased multiplier from 20x to 50x for better spread matching
-                scaled_residual = base_residual * (1.0 + vol_scale * 50.0)
+                # residual_scale is configurable (default 50.0, derived from empirical calibration)
+                scaled_residual = base_residual * (1.0 + vol_scale * self.config.residual_scale)
                 scaled_path.append(scaled_residual)
             paths_list.append(scaled_path)
 

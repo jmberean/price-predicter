@@ -8,7 +8,8 @@ Based on "Bellman Conformal Inference" (Yang, Candès & Lei, 2024).
 """
 
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -16,11 +17,16 @@ import numpy as np
 import torch
 
 
+def _get_default_max_horizon() -> int:
+    """Get default max horizon from environment or use 90."""
+    return int(os.getenv("TRAINING_HORIZON", "90"))
+
+
 @dataclass
 class BellmanConfig:
     """Configuration for Bellman Conformal Inference."""
 
-    max_horizon: int = 14
+    max_horizon: int = field(default_factory=_get_default_max_horizon)
     target_coverage: float = 0.9
     discount_factor: float = 0.95  # Temporal discounting
     cost_undercoverage: float = 10.0  # Penalty for missing true value
@@ -283,7 +289,7 @@ class BellmanNCCHybrid:
         ncc_calibrated = {}
         for horizon, quantiles in base_quantiles.items():
             feat_with_horizon = (features or {}).copy()
-            feat_with_horizon["horizon_norm"] = horizon / 14.0
+            feat_with_horizon["horizon_norm"] = horizon / self.bellman.config.max_horizon
             ncc_calibrated[horizon] = self.ncc.calibrate_quantiles(
                 quantiles, features=feat_with_horizon, horizon=horizon
             )
@@ -325,7 +331,7 @@ class BellmanNCCHybrid:
             for horizon, quantiles in forecasts.items():
                 flat_base_quantiles.append(quantiles)
                 feat_with_h = features.copy()
-                feat_with_h["horizon_norm"] = horizon / 14.0
+                feat_with_h["horizon_norm"] = horizon / self.bellman.config.max_horizon
                 flat_features.append(feat_with_h)
                 flat_actuals.append(actual)
                 flat_horizons.append(horizon)
@@ -344,7 +350,7 @@ class BellmanNCCHybrid:
             calibrated = {}
             for horizon, quantiles in forecasts.items():
                 feat_with_h = features.copy()
-                feat_with_h["horizon_norm"] = horizon / 14.0
+                feat_with_h["horizon_norm"] = horizon / self.bellman.config.max_horizon
                 calibrated[horizon] = self.ncc.calibrate_quantiles(
                     quantiles, features=feat_with_h, horizon=horizon
                 )

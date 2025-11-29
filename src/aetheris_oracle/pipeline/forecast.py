@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from ..config import ForecastConfig
-from ..data.connectors import SyntheticDataConnector
+from ..data.free_connectors import FreeDataConnector
 from ..data.interfaces import DataConnector
 from ..data.schemas import JumpPath, MarketFeatureFrame, RegimeVector, ResidualPaths, TrendPath, VolPath
 from ..features.regime import compute_regime_vector
@@ -138,7 +138,7 @@ class ForecastEngine:
         requested_device = device if device is not None else os.getenv("TORCH_DEVICE", "cpu")
         self.device = get_available_device(requested_device)
 
-        self.data_connector = connector or SyntheticDataConnector(seed=seed)
+        self.data_connector = connector or FreeDataConnector()
         self.normalizer = StationarityNormalizer()
         self.metrics = metrics or LoggingMetricsSink()
 

@@ -19,7 +19,6 @@ import numpy as np
 import torch
 
 from ..config import ForecastConfig
-from ..data.connectors import SyntheticDataConnector
 from ..data.free_connectors import FreeDataConnector
 from ..data.interfaces import DataConnector
 from ..features.regime import compute_regime_vector
@@ -31,7 +30,28 @@ from .training_data_prep import (
     prepare_fmgp_residual_training_data,
     prepare_neural_vol_training_data,
     prepare_mamba_trend_training_data,
+    get_training_horizon,
 )
+
+
+def get_training_horizons() -> List[int]:
+    """
+    Get horizon values for training based on TRAINING_HORIZON.
+
+    Returns appropriate sub-horizons for calibration training.
+    """
+    max_horizon = get_training_horizon()
+
+    if max_horizon <= 7:
+        horizons = [1, 3, max_horizon]
+    elif max_horizon <= 14:
+        horizons = [1, 3, 7, max_horizon]
+    elif max_horizon <= 30:
+        horizons = [1, 7, 14, max_horizon]
+    else:
+        horizons = [1, 7, 14, 30, max_horizon]
+
+    return sorted(list(set(horizons)))
 
 
 def train_ncc_calibration(
@@ -65,7 +85,7 @@ def train_ncc_calibration(
     engine = NCCCalibrationEngine(config=config, device=device)
 
     # Prepare real historical training data (respects .env TRAINING_SAMPLES_NCC)
-    horizons = [1, 3, 7, 14]
+    horizons = get_training_horizons()
 
     base_quantiles_list, actuals_list, features_list, horizon_indices_list = prepare_ncc_training_data(
         connector=connector,
@@ -188,7 +208,7 @@ def train_neural_jump_sde(
 
     # Prepare real historical training data
     n_samples = 300
-    horizon = 14
+    horizon = get_training_horizon()
 
     x0_list, conditioning_list, target_paths_list = prepare_jump_sde_training_data(
         connector=connector,

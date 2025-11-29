@@ -13,7 +13,8 @@ and significant additional complexity. This provides a simplified but functional
 """
 
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -30,13 +31,18 @@ except ImportError:
     print("Warning: mamba-ssm not installed. Using simplified implementation.")
 
 
+def _get_default_horizon() -> int:
+    """Get default horizon from environment or use 90."""
+    return int(os.getenv("TRAINING_HORIZON", "90"))
+
+
 @dataclass
 class MambaTrendConfig:
     """Configuration for Mamba-based trend model."""
 
     d_model: int = 128
     n_layers: int = 4
-    horizon: int = 90
+    horizon: int = field(default_factory=_get_default_horizon)
     input_dim: int = 5  # returns + regime features
     learning_rate: float = 0.001
     artifact_path: str = "artifacts/mamba_trend_state.pt"

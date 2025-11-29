@@ -54,6 +54,13 @@ class VolPathEngine:
         self.config = config or VolPathConfig()
         self.state = state or self._load_state(Path(self.config.artifact_path))
 
+    def _safe_get(self, d: Dict[str, float], key: str, default: float) -> float:
+        """Get value from dict, returning default if missing or NaN."""
+        value = d.get(key)
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return default
+        return value
+
     def forecast(
         self,
         iv_points: Dict[str, float],
@@ -61,10 +68,10 @@ class VolPathEngine:
         regime_strength: float = 1.0,
         mm_indices: Tuple[float, float, float] | None = None,
     ) -> VolPath:
-        base = iv_points.get("iv_7d_atm", 0.45)
-        medium = iv_points.get("iv_14d_atm", base)
-        longer = iv_points.get("iv_30d_atm", medium)
-        skew = iv_points.get("skew_25d", 0.0)
+        base = self._safe_get(iv_points, "iv_7d_atm", 0.45)
+        medium = self._safe_get(iv_points, "iv_14d_atm", base)
+        longer = self._safe_get(iv_points, "iv_30d_atm", medium)
+        skew = self._safe_get(iv_points, "skew_25d", 0.0)
         gsi, inventory, basis_pressure = mm_indices or (0.0, 0.0, 0.0)
         input_vec = [base, medium, longer, skew, regime_strength, gsi, inventory, basis_pressure]
         hidden = self._forward_hidden(input_vec)

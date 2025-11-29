@@ -7,6 +7,7 @@ which uses a neural network to learn calibration dynamics with long-term coverag
 
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -16,19 +17,45 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _get_default_max_horizon() -> int:
+    """Get default max horizon from environment or use 90."""
+    return int(os.getenv("TRAINING_HORIZON", "90"))
+
+
+def _get_ncc_hidden_dim() -> int:
+    """Get NCC hidden_dim from tuned env var or use default."""
+    return int(os.getenv("TUNING_NCC_HIDDEN_DIM", "64"))
+
+
+def _get_ncc_learning_rate() -> float:
+    """Get NCC learning_rate from tuned env var or use default."""
+    return float(os.getenv("TUNING_NCC_LR", "0.001"))
+
+
+def _get_ncc_smoothness_weight() -> float:
+    """Get NCC smoothness_weight from tuned env var or use default."""
+    return float(os.getenv("TUNING_NCC_SMOOTHNESS", "0.1"))
+
+
+def _get_ncc_epochs() -> int:
+    """Get NCC training epochs from tuned env var or use default."""
+    return int(os.getenv("TUNING_NCC_EPOCHS", "20"))
+
+
 @dataclass
 class NCCConfig:
     """Configuration for Neural Conformal Control."""
 
     feature_dim: int = 10
-    hidden_dim: int = 64
+    hidden_dim: int = field(default_factory=_get_ncc_hidden_dim)
     n_quantiles: int = 7  # P5, P10, P25, P50, P75, P90, P95
-    max_horizon: int = 14
-    learning_rate: float = 0.001
+    max_horizon: int = field(default_factory=_get_default_max_horizon)
+    learning_rate: float = field(default_factory=_get_ncc_learning_rate)
     target_coverage: float = 0.9
     alpha: float = 0.1  # Sharpness penalty weight
-    smoothness_weight: float = 0.1
+    smoothness_weight: float = field(default_factory=_get_ncc_smoothness_weight)
     integrator_hidden: int = 32
+    default_epochs: int = field(default_factory=_get_ncc_epochs)
     artifact_path: str = "artifacts/ncc_state.pt"
 
 

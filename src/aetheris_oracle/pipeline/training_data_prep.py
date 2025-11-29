@@ -1,3 +1,4 @@
+import logging
 """
 Training data preparation for SOTA components.
 
@@ -29,19 +30,80 @@ except ImportError:
     pass  # python-dotenv not available, use system env vars only
 
 
+logger = logging.getLogger(__name__)
+
+
+class InsufficientDataError(Exception):
+    """Raised when there's not enough real data for training. No synthetic fallback."""
+    pass
+
+
+def get_training_horizon() -> int:
+    """Get training horizon from environment or use default of 90."""
+    return int(os.getenv("TRAINING_HORIZON", "90"))
+
+
+def get_min_training_samples() -> int:
+    """Get minimum training samples from environment or use default of 20.
+
+    Hyperparameter tuning's --validate mode sets this to 3 for quick testing.
+    """
+    return int(os.getenv("TRAINING_MIN_SAMPLES", "20"))
+
+
 # Training data configuration from environment
-def get_training_config() -> Dict[str, int]:
+def get_dynamic_holdout_days(horizon: int = None, total_data_days: int = 1800) -> int:
+    """
+    Calculate dynamic holdout period based on forecast horizon.
+
+    The holdout is:
+    - 2x the horizon (to avoid contamination and allow validation)
+    - Minimum 60 days (for regime diversity)
+    - Maximum 90 days (to preserve recent training data)
+
+    Can be overridden via TRAINING_HOLDOUT_DAYS env var.
+
+    Args:
+        horizon: Forecast horizon in days
+        total_data_days: Total days of available data (unused, kept for compatibility)
+
+    Returns:
+        Holdout period in days
+    """
+    # Check for explicit override
+    override = os.getenv("TRAINING_HOLDOUT_DAYS")
+    if override:
+        return int(override)
+
+    if horizon is None:
+        horizon = get_training_horizon()
+
+    # 2x horizon, clamped between 60 and 90 days
+    holdout = int(horizon * 2)
+    return max(60, min(holdout, 90))
+
+
+def get_training_config(horizon: int = None) -> Dict[str, int]:
     """
     Load training data configuration from environment variables.
 
     IMPORTANT: holdout_days prevents temporal overfitting by excluding
     the most recent N days from training. This ensures the backtest period
     is completely unseen during training.
+    
+    Args:
+        horizon: Forecast horizon (used for dynamic holdout calculation)
     """
+    # Get base config
+    lookback_days = int(os.getenv("TRAINING_LOOKBACK_DAYS", "180"))
+    
+    # Calculate dynamic holdout if not explicitly set
+    default_holdout = get_dynamic_holdout_days(horizon, lookback_days * 10)  # Assume 10x data
+    
     return {
-        "lookback_days": int(os.getenv("TRAINING_LOOKBACK_DAYS", "180")),
+        "lookback_days": lookback_days,
         "window_days": int(os.getenv("TRAINING_WINDOW_DAYS", "90")),
-        "holdout_days": int(os.getenv("TRAINING_HOLDOUT_DAYS", "60")),  # Exclude last 60 days
+        "holdout_days": int(os.getenv("TRAINING_HOLDOUT_DAYS", str(default_holdout))),
         "samples_ncc": int(os.getenv("TRAINING_SAMPLES_NCC", "300")),
         "samples_fmgp": int(os.getenv("TRAINING_SAMPLES_FMGP", "300")),
         "samples_neural_jump": int(os.getenv("TRAINING_SAMPLES_NEURAL_JUMP", "300")),
@@ -61,37 +123,60 @@ def fetch_historical_prices(
     """
     Fetch historical price data with features.
 
+    Optimized: Makes ONE API call and slices locally instead of N calls per day.
+
     Returns:
         List of (date, closes, features) tuples
     """
+    # Fetch ALL data in ONE call (from earliest needed date to end)
+    total_days = (end_date - start_date).days + window_days
+    print(f"Fetching {total_days} days in single API call...", flush=True)
+
+    try:
+        frame = connector.fetch_window(
+            asset_id=asset_id,
+            as_of=end_date,
+            window=timedelta(days=total_days),
+        )
+    except Exception as e:
+        print(f"Warning: Failed to fetch historical data: {e}")
+        return []
+
+    if len(frame.closes) < window_days:
+        print(f"Warning: Insufficient data ({len(frame.closes)} days, need {window_days})")
+        return []
+
+    print(f"Got {len(frame.closes)} days, creating training windows...", flush=True)
+
+    # Create date-indexed data by slicing the single fetch result
     dates = []
-    current = start_date
+    num_days = (end_date - start_date).days + 1
 
-    while current <= end_date:
-        try:
-            frame = connector.fetch_window(
-                asset_id=asset_id,
-                as_of=current,
-                window=timedelta(days=window_days),
-            )
+    for day_offset in range(num_days):
+        current = start_date + timedelta(days=day_offset)
 
-            if len(frame.closes) >= window_days // 2:  # At least half the window
-                features = {
-                    "iv_points": frame.iv_points,
-                    "funding_rate": frame.funding_rate,
-                    "basis": frame.basis,
-                    "order_imbalance": frame.order_imbalance,
-                    "skew": frame.skew,
-                    "narrative_scores": frame.narrative_scores,
-                }
-                dates.append((current, frame.closes, features))
-        except Exception as e:
-            print(f"Warning: Failed to fetch data for {current}: {e}")
+        # Calculate slice indices (frame.closes is oldest to newest)
+        end_idx = len(frame.closes) - (num_days - day_offset - 1)
+        start_idx = max(0, end_idx - window_days)
 
-        current += timedelta(days=1)
+        if end_idx <= start_idx or end_idx > len(frame.closes):
+            continue
 
+        window_closes = frame.closes[start_idx:end_idx]
+
+        if len(window_closes) >= window_days // 2:
+            features = {
+                "iv_points": frame.iv_points,
+                "funding_rate": frame.funding_rate,
+                "basis": frame.basis,
+                "order_imbalance": frame.order_imbalance,
+                "skew": frame.skew,
+                "narrative_scores": frame.narrative_scores,
+            }
+            dates.append((current, list(window_closes), features))
+
+    print(f"Created {len(dates)} training windows", flush=True)
     return dates
-
 
 def prepare_ncc_training_data(
     connector: DataConnector,
@@ -121,7 +206,7 @@ def prepare_ncc_training_data(
 
     # Use SOTA forecast engine to generate base quantiles (without NCC calibration)
     # This trains NCC to calibrate SOTA forecasts, not legacy
-    # IMPORTANT: Must enable ALL SOTA components to match Full SOTA inference distribution
+    # IMPORTANT: Match the 5-SOTA configuration (without MambaTS due to directional bias)
     engine = ForecastEngine(
         connector=connector,
         seed=42,
@@ -129,13 +214,12 @@ def prepare_ncc_training_data(
         use_diff_greeks=True,
         use_fm_gp_residuals=True,
         use_neural_rough_vol=True,
-        use_neural_jumps=True,  # Must be True to match Full SOTA configuration
-        use_mamba_trend=True,
+        use_neural_jumps=True,
+        use_mamba_trend=False,  # Disabled - has directional bias issues
         diff_greeks_artifact_path="artifacts/diff_greeks.pt",
         fmgp_artifact_path="artifacts/fmgp_residuals.pt",
         neural_vol_artifact_path="artifacts/neural_rough_vol.pt",
         neural_jump_artifact_path="artifacts/neural_jump_sde.pt",
-        mamba_artifact_path="artifacts/mamba_trend.pt",
     )
 
     # Fetch historical data (exclude holdout period to prevent temporal overfitting)
@@ -150,11 +234,14 @@ def prepare_ncc_training_data(
     )
 
     if len(historical_data) < 30:
-        print(f"Warning: Only {len(historical_data)} days of data, using synthetic fallback")
-        return _prepare_ncc_synthetic_fallback(n_samples, horizons)
+        raise InsufficientDataError(
+            f"NCC training requires at least 30 days of data, got {len(historical_data)}. "
+            "Run: python scripts/collect_historical_data.py --asset BTC-USD"
+        )
 
     # Sample random dates
-    sample_indices = np.random.choice(
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(
         len(historical_data) - 14, size=min(n_samples, len(historical_data) - 14), replace=False
     )
 
@@ -206,9 +293,12 @@ def prepare_ncc_training_data(
 
     print(f"Generated {len(base_quantiles_list)} NCC training samples")
 
-    if len(base_quantiles_list) < 50:
-        print("Warning: Too few samples, supplementing with synthetic data")
-        return _prepare_ncc_synthetic_fallback(n_samples, horizons)
+    min_samples = get_min_training_samples()
+    if len(base_quantiles_list) < min_samples:
+        raise InsufficientDataError(
+            f"NCC training requires at least {min_samples} samples, got {len(base_quantiles_list)}. "
+            "Provide more historical data."
+        )
 
     return base_quantiles_list, actuals_list, features_list, horizon_indices_list
 
@@ -255,7 +345,7 @@ def prepare_jump_sde_training_data(
     connector: DataConnector,
     asset_id: str,
     n_samples: int = None,
-    horizon: int = 14,
+    horizon: int = None,
 ) -> Tuple[List, List, List]:
     """
     Prepare training data for Neural Jump SDE.
@@ -265,6 +355,7 @@ def prepare_jump_sde_training_data(
     Returns:
         (x0_list, conditioning_list, target_paths_list)
     """
+    horizon = horizon or get_training_horizon()
     config = get_training_config()
     n_samples = n_samples or config["samples_neural_jump"]
     lookback_days = config["lookback_days"]
@@ -288,13 +379,16 @@ def prepare_jump_sde_training_data(
     )
 
     if len(historical_data) < 30:
-        print("Warning: Insufficient data, using synthetic fallback")
-        return _prepare_jump_sde_synthetic_fallback(n_samples, horizon)
+        raise InsufficientDataError(
+            f"Neural Jump SDE training requires at least 30 days of data. "
+            "Run: python scripts/collect_historical_data.py --asset BTC-USD"
+        )
 
     normalizer = StationarityNormalizer()
 
     # Sample random windows
-    sample_indices = np.random.choice(
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(
         len(historical_data) - horizon - 1, size=min(n_samples, len(historical_data) - horizon - 1), replace=False
     )
 
@@ -347,9 +441,12 @@ def prepare_jump_sde_training_data(
 
     print(f"Generated {len(x0_list)} Neural Jump SDE training samples")
 
-    if len(x0_list) < 50:
-        print("Warning: Too few samples, using synthetic fallback")
-        return _prepare_jump_sde_synthetic_fallback(n_samples, horizon)
+    min_samples = get_min_training_samples()
+    if len(x0_list) < min_samples:
+        raise InsufficientDataError(
+            f"Neural Jump SDE training requires at least {min_samples} samples, got {len(x0_list)}. "
+            "Provide more historical data."
+        )
 
     return x0_list, conditioning_list, target_paths_list
 
@@ -417,11 +514,14 @@ def prepare_diff_greeks_training_data(
     )
 
     if len(historical_data) < 10:
-        print("Warning: Insufficient data, using synthetic fallback")
-        return _prepare_diff_greeks_synthetic_fallback(n_samples)
+        raise InsufficientDataError(
+            f"Diff Greeks training requires at least 10 days of data. "
+            "Run: python scripts/collect_historical_data.py --asset BTC-USD"
+        )
 
     # Sample random dates
-    sample_indices = np.random.choice(
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(
         len(historical_data), size=min(n_samples, len(historical_data)), replace=False
     )
 
@@ -449,9 +549,12 @@ def prepare_diff_greeks_training_data(
 
     print(f"Generated {len(spot_list)} Diff Greeks training samples")
 
-    if len(spot_list) < 20:
-        print("Warning: Too few samples, using synthetic fallback")
-        return _prepare_diff_greeks_synthetic_fallback(n_samples)
+    min_samples = get_min_training_samples()
+    if len(spot_list) < min_samples:
+        raise InsufficientDataError(
+            f"Diff Greeks training requires at least {min_samples} samples, got {len(spot_list)}. "
+            "Provide more historical data."
+        )
 
     return spot_list, iv_surfaces_list, target_mm_state_list
 
@@ -487,7 +590,7 @@ def prepare_fmgp_residual_training_data(
     connector: DataConnector,
     asset_id: str,
     n_samples: int = None,
-    horizon: int = 14,
+    horizon: int = None,
 ) -> Tuple[List, List]:
     """
     Prepare training data for FM-GP Residual Generator.
@@ -501,6 +604,7 @@ def prepare_fmgp_residual_training_data(
     n_samples = n_samples or config["samples_fmgp"]
     lookback_days = config["lookback_days"]
     window_days = config["window_days"]
+    horizon = horizon or get_training_horizon()  # Read from env if not provided
 
     print(f"Preparing FM-GP Residual training data: {n_samples} samples from {lookback_days} days...")
 
@@ -519,13 +623,16 @@ def prepare_fmgp_residual_training_data(
     )
 
     if len(historical_data) < 30:
-        print("Warning: Insufficient data for FM-GP, using synthetic fallback")
-        return _prepare_fmgp_synthetic_fallback(n_samples, horizon)
+        raise InsufficientDataError(
+            f"FM-GP training requires at least 30 days of data. "
+            "Run: python scripts/collect_historical_data.py --asset BTC-USD"
+        )
 
     normalizer = StationarityNormalizer()
 
     # Sample random windows
-    sample_indices = np.random.choice(
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(
         len(historical_data) - horizon - 1, size=min(n_samples, len(historical_data) - horizon - 1), replace=False
     )
 
@@ -574,6 +681,11 @@ def prepare_fmgp_residual_training_data(
                 features["order_imbalance"],
             ]
 
+            # Pad to cond_dim=10 (model expects 10 conditioning features)
+            cond_dim = 10
+            conditioning = conditioning + [0.0] * (cond_dim - len(conditioning))
+            conditioning = conditioning[:cond_dim]
+
             conditioning_list.append(conditioning)
             residual_paths_list.append(residuals.tolist())
 
@@ -583,9 +695,12 @@ def prepare_fmgp_residual_training_data(
 
     print(f"Generated {len(residual_paths_list)} FM-GP training samples")
 
-    if len(residual_paths_list) < 20:
-        print("Warning: Too few FM-GP samples, using synthetic fallback")
-        return _prepare_fmgp_synthetic_fallback(n_samples, horizon)
+    min_samples = get_min_training_samples()
+    if len(residual_paths_list) < min_samples:
+        raise InsufficientDataError(
+            f"FM-GP training requires at least {min_samples} samples, got {len(residual_paths_list)}. "
+            "Provide more historical data."
+        )
 
     return conditioning_list, residual_paths_list
 
@@ -598,7 +713,7 @@ def _prepare_fmgp_synthetic_fallback(n_samples: int, horizon: int) -> Tuple[List
     residual_paths_list = []
 
     for _ in range(n_samples):
-        conditioning = np.random.randn(5).tolist()
+        conditioning = np.random.randn(10).tolist()  # cond_dim=10
 
         vol_scale = np.random.uniform(0.01, 0.05)
         residuals = np.random.randn(horizon) * vol_scale
@@ -614,7 +729,7 @@ def prepare_neural_vol_training_data(
     connector: DataConnector,
     asset_id: str,
     n_samples: int = None,
-    horizon: int = 14,
+    horizon: int = None,
 ) -> Tuple[List, List, List]:
     """
     Prepare training data for Neural Rough Volatility.
@@ -626,6 +741,7 @@ def prepare_neural_vol_training_data(
     """
     config = get_training_config()
     n_samples = n_samples or config["samples_neural_vol"]
+    horizon = horizon or get_training_horizon()
     lookback_days = config["lookback_days"]
     window_days = config["window_days"]
 
@@ -647,11 +763,14 @@ def prepare_neural_vol_training_data(
     )
 
     if len(historical_data) < 30:
-        print("Warning: Insufficient data for Neural Vol, using synthetic fallback")
-        return _prepare_neural_vol_synthetic_fallback(n_samples, horizon)
+        raise InsufficientDataError(
+            f"Neural Vol training requires at least 30 days of data. "
+            "Run: python scripts/collect_historical_data.py --asset BTC-USD"
+        )
 
     # Sample random windows
-    sample_indices = np.random.choice(
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(
         len(historical_data) - horizon - 1, size=min(n_samples, len(historical_data) - horizon - 1), replace=False
     )
 
@@ -715,9 +834,12 @@ def prepare_neural_vol_training_data(
 
     print(f"Generated {len(target_vol_paths)} Neural Vol training samples")
 
-    if len(target_vol_paths) < 20:
-        print("Warning: Too few Neural Vol samples, using synthetic fallback")
-        return _prepare_neural_vol_synthetic_fallback(n_samples, horizon)
+    min_samples = get_min_training_samples()
+    if len(target_vol_paths) < min_samples:
+        raise InsufficientDataError(
+            f"Neural Vol training requires at least {min_samples} samples, got {len(target_vol_paths)}. "
+            "Provide more historical data."
+        )
 
     return past_vols, conditioning_list, target_vol_paths
 
@@ -752,7 +874,7 @@ def prepare_mamba_trend_training_data(
     asset_id: str,
     n_samples: int = None,
     lookback: int = 20,
-    horizon: int = 14,
+    horizon: int = None,
 ) -> Tuple[List, List]:
     """
     Prepare training data for MambaTS Trend.
@@ -764,6 +886,7 @@ def prepare_mamba_trend_training_data(
     """
     config = get_training_config()
     n_samples = n_samples or config["samples_mamba"]
+    horizon = horizon or get_training_horizon()
     lookback_days = config["lookback_days"]
     window_days = config["window_days"]
 
@@ -784,13 +907,16 @@ def prepare_mamba_trend_training_data(
     )
 
     if len(historical_data) < 30:
-        print("Warning: Insufficient data for MambaTS, using synthetic fallback")
-        return _prepare_mamba_synthetic_fallback(n_samples, lookback, horizon)
+        raise InsufficientDataError(
+            f"MambaTS training requires at least 30 days of data. "
+            "Run: python scripts/collect_historical_data.py --asset BTC-USD"
+        )
 
     normalizer = StationarityNormalizer()
 
     # Sample random windows
-    sample_indices = np.random.choice(
+    rng = np.random.RandomState(42)
+    sample_indices = rng.choice(
         len(historical_data) - horizon - 1, size=min(n_samples, len(historical_data) - horizon - 1), replace=False
     )
 
@@ -848,9 +974,12 @@ def prepare_mamba_trend_training_data(
 
     print(f"Generated {len(input_sequences)} MambaTS training samples")
 
-    if len(input_sequences) < 20:
-        print("Warning: Too few MambaTS samples, using synthetic fallback")
-        return _prepare_mamba_synthetic_fallback(n_samples, lookback, horizon)
+    min_samples = get_min_training_samples()
+    if len(input_sequences) < min_samples:
+        raise InsufficientDataError(
+            f"MambaTS training requires at least {min_samples} samples, got {len(input_sequences)}. "
+            "Provide more historical data."
+        )
 
     return input_sequences, target_sequences
 

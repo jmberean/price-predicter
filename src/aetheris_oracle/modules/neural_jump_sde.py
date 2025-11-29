@@ -10,7 +10,8 @@ Learns: intensity function λ(t), jump size distribution, diffusion coefficient.
 
 import json
 import math
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -20,16 +21,37 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _get_jump_hidden_dim() -> int:
+    """Get Neural Jump hidden_dim from tuned env var or use default."""
+    return int(os.getenv("TUNING_JUMP_HIDDEN_DIM", "128"))
+
+
+def _get_jump_n_layers() -> int:
+    """Get Neural Jump n_layers from tuned env var or use default."""
+    return int(os.getenv("TUNING_JUMP_LAYERS", "3"))
+
+
+def _get_jump_learning_rate() -> float:
+    """Get Neural Jump learning_rate from tuned env var or use default."""
+    return float(os.getenv("TUNING_JUMP_LR", "0.001"))
+
+
+def _get_jump_epochs() -> int:
+    """Get Neural Jump training epochs from tuned env var or use default."""
+    return int(os.getenv("TUNING_JUMP_EPOCHS", "50"))
+
+
 @dataclass
 class NeuralJumpSDEConfig:
     """Configuration for Neural Jump SDE."""
 
     state_dim: int = 1  # Price (or log-price)
     cond_dim: int = 10  # Conditioning features
-    hidden_dim: int = 128
-    n_layers: int = 3
-    dt: float = 1.0 / 24.0  # Time step (hourly if horizon in days)
-    learning_rate: float = 0.001
+    hidden_dim: int = field(default_factory=_get_jump_hidden_dim)
+    n_layers: int = field(default_factory=_get_jump_n_layers)
+    dt: float = 1.0  # Daily steps (matching training data resolution)
+    learning_rate: float = field(default_factory=_get_jump_learning_rate)
+    default_epochs: int = field(default_factory=_get_jump_epochs)
     artifact_path: str = "artifacts/neural_jump_sde_state.pt"
 
 

@@ -11,8 +11,10 @@ classical models (Heston, SABR) which assume H = 0.5.
 """
 
 import json
+import logging
 import math
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -22,16 +24,42 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _get_default_horizon() -> int:
+    """Get default horizon from environment or use 90."""
+    return int(os.getenv("TRAINING_HORIZON", "90"))
+
+
+def _get_vol_hidden_dim() -> int:
+    """Get Neural Vol hidden_dim from tuned env var or use default."""
+    return int(os.getenv("TUNING_VOL_HIDDEN_DIM", "128"))
+
+
+def _get_vol_hurst() -> float:
+    """Get Neural Vol hurst from tuned env var or use default."""
+    return float(os.getenv("TUNING_VOL_HURST", "0.1"))
+
+
+def _get_vol_learning_rate() -> float:
+    """Get Neural Vol learning_rate from tuned env var or use default."""
+    return float(os.getenv("TUNING_VOL_LR", "0.001"))
+
+
+def _get_vol_epochs() -> int:
+    """Get Neural Vol training epochs from tuned env var or use default."""
+    return int(os.getenv("TUNING_VOL_EPOCHS", "30"))
+
+
 @dataclass
 class NeuralRoughVolConfig:
     """Configuration for Neural Rough Volatility."""
 
-    hurst: float = 0.1  # Hurst parameter (empirically ≈ 0.1 for rough vol)
-    horizon: int = 90
+    hurst: float = field(default_factory=_get_vol_hurst)
+    horizon: int = field(default_factory=_get_default_horizon)
     cond_dim: int = 10  # Conditioning features
-    hidden_dim: int = 128
+    hidden_dim: int = field(default_factory=_get_vol_hidden_dim)
     n_vol_params: int = 3  # xi (vol-of-vol), rho (correlation), fwd_var
-    learning_rate: float = 0.001
+    learning_rate: float = field(default_factory=_get_vol_learning_rate)
+    default_epochs: int = field(default_factory=_get_vol_epochs)
     artifact_path: str = "artifacts/neural_rough_vol_state.pt"
 
 
@@ -216,7 +244,7 @@ class NeuralRoughVolEngine(nn.Module):
         vol_paths = torch.exp(log_vol)
 
         # Apply forward variance adjustment
-        vol_paths = vol_paths * torch.sqrt(fwd_var.unsqueeze(1) / past_vol.unsqueeze(1))
+        vol_paths = vol_paths * torch.sqrt(fwd_var.unsqueeze(1) / (past_vol.unsqueeze(1) + 1e-8))
 
         return vol_paths
 
@@ -314,23 +342,32 @@ class NeuralRoughVolWrapper:
         """
         self.model.eval()
 
-        # Current vol level
+        # Current vol level - handle NaN values
         base_iv = iv_points.get("iv_7d_atm", 0.5)
+        if base_iv is None or (isinstance(base_iv, float) and math.isnan(base_iv)):
+            base_iv = 0.5
 
-        # Build conditioning
+        # Build conditioning - handle NaN values from mm_indices
         gsi, inventory, basis_pressure = mm_indices or (0.0, 0.0, 0.0)
+        safe_gsi = 0.0 if (gsi is None or (isinstance(gsi, float) and math.isnan(gsi))) else gsi
+        safe_inventory = 0.0 if (inventory is None or (isinstance(inventory, float) and math.isnan(inventory))) else inventory
+        safe_basis_pressure = 0.0 if (basis_pressure is None or (isinstance(basis_pressure, float) and math.isnan(basis_pressure))) else basis_pressure
 
         iv_30 = iv_points.get("iv_30d_atm", base_iv)
+        if iv_30 is None or (isinstance(iv_30, float) and math.isnan(iv_30)):
+            iv_30 = base_iv
         skew = iv_points.get("skew_25d", 0.0)
+        if skew is None or (isinstance(skew, float) and math.isnan(skew)):
+            skew = 0.0
 
         conditioning = [
             base_iv,
             iv_30,
             skew,
             regime_strength,
-            gsi,
-            inventory,
-            basis_pressure,
+            safe_gsi,
+            safe_inventory,
+            safe_basis_pressure,
         ]
 
         # Pad to cond_dim

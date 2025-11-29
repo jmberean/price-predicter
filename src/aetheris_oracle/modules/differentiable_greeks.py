@@ -11,7 +11,8 @@ Based on "Deep Hedging" (Bühler et al., 2019) differentiable derivatives framew
 
 import json
 import math
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -21,17 +22,38 @@ import torch.nn.functional as F
 from scipy.stats import norm
 
 
+def _get_greeks_embed_dim() -> int:
+    """Get Greeks embed_dim from tuned env var or use default."""
+    return int(os.getenv("TUNING_GREEKS_EMBED_DIM", "64"))
+
+
+def _get_greeks_n_heads() -> int:
+    """Get Greeks n_heads from tuned env var or use default."""
+    return int(os.getenv("TUNING_GREEKS_HEADS", "4"))
+
+
+def _get_greeks_learning_rate() -> float:
+    """Get Greeks learning_rate from tuned env var or use default."""
+    return float(os.getenv("TUNING_GREEKS_LR", "0.001"))
+
+
+def _get_greeks_epochs() -> int:
+    """Get Greeks training epochs from tuned env var or use default."""
+    return int(os.getenv("TUNING_GREEKS_EPOCHS", "30"))
+
+
 @dataclass
 class DifferentiableGreeksConfig:
     """Configuration for Differentiable Greeks MM Engine."""
 
     n_strikes: int = 20  # Number of strike points
     n_expiries: int = 4  # Number of expiries
-    embed_dim: int = 64
-    n_heads: int = 4
+    embed_dim: int = field(default_factory=_get_greeks_embed_dim)
+    n_heads: int = field(default_factory=_get_greeks_n_heads)
     hidden_dim: int = 128
     mm_state_dim: int = 64  # Output MM embedding dimension
-    learning_rate: float = 0.001
+    learning_rate: float = field(default_factory=_get_greeks_learning_rate)
+    default_epochs: int = field(default_factory=_get_greeks_epochs)
     artifact_path: str = "artifacts/diff_greeks_state.pt"
 
 
@@ -393,10 +415,16 @@ class DifferentiableMMEngineWrapper:
         ivs_t = ivs_flat.unsqueeze(0).to(self.device)
         ois_t = ois_flat.unsqueeze(0).to(self.device)
 
-        funding_t = torch.tensor([funding_rate], device=self.device, dtype=torch.float32)
-        basis_t = torch.tensor([basis], device=self.device, dtype=torch.float32)
-        skew_t = torch.tensor([skew], device=self.device, dtype=torch.float32)
-        imbalance_t = torch.tensor([order_imbalance], device=self.device, dtype=torch.float32)
+        # Sanitize inputs - replace NaN with defaults to avoid propagation
+        safe_funding = 0.0 if (funding_rate is None or (isinstance(funding_rate, float) and math.isnan(funding_rate))) else funding_rate
+        safe_basis = 0.0 if (basis is None or (isinstance(basis, float) and math.isnan(basis))) else basis
+        safe_skew = 0.0 if (skew is None or (isinstance(skew, float) and math.isnan(skew))) else skew
+        safe_imbalance = 0.0 if (order_imbalance is None or (isinstance(order_imbalance, float) and math.isnan(order_imbalance))) else order_imbalance
+
+        funding_t = torch.tensor([safe_funding], device=self.device, dtype=torch.float32)
+        basis_t = torch.tensor([safe_basis], device=self.device, dtype=torch.float32)
+        skew_t = torch.tensor([safe_skew], device=self.device, dtype=torch.float32)
+        imbalance_t = torch.tensor([safe_imbalance], device=self.device, dtype=torch.float32)
 
         with torch.no_grad():
             mm_state, attn_weights = self.model(

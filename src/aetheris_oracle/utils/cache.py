@@ -108,7 +108,7 @@ class SimpleCache:
         }
 
 
-def make_cache_key(asset_id: str, start: datetime, end: datetime) -> str:
+def make_cache_key(asset_id: str, start: datetime, end: datetime, **kwargs) -> str:
     """
     Create cache key for market data.
 

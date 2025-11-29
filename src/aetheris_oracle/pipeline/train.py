@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Sequence
 
-from ..data.connectors import SyntheticDataConnector
+from ..data.free_connectors import FreeDataConnector
 from ..data.interfaces import DataConnector
 from ..features.regime import compute_regime_vector
 from ..features.stationarity import StationarityNormalizer
@@ -26,6 +28,9 @@ class TrainConfig:
     num_samples: int = 24
     artifact_root: str = "artifacts"
     seed: int | None = None
+    validation_split: float = 0.2  # 80/20 train/val split
+    early_stopping_patience: int = 5  # Stop if no improvement for N epochs
+    log_validation: bool = True  # Log validation loss each epoch
 
     @property
     def window(self) -> timedelta:
@@ -41,7 +46,7 @@ class TrainArtifacts:
 
 
 def run_training(config: TrainConfig, connector: DataConnector | None = None) -> TrainArtifacts:
-    connector = connector or SyntheticDataConnector(seed=config.seed)
+    connector = connector or FreeDataConnector()
     normalizer = StationarityNormalizer()
     mm_engine = MarketMakerEngine()
 
@@ -140,6 +145,25 @@ def run_training(config: TrainConfig, connector: DataConnector | None = None) ->
     jump_state = jump_model.train(jump_features, jump_labels)
 
     return TrainArtifacts(trend=trend_state, vol=vol_state, residual=residual_state, jump=jump_state)
+
+
+def split_temporal(data_list: List, val_ratio: float = 0.2):
+    """
+    Split data temporally for train/validation.
+    
+    Uses the most recent portion for validation to simulate real deployment.
+    
+    Args:
+        data_list: List of data samples
+        val_ratio: Fraction to use for validation (default 0.2 = 20%)
+        
+    Returns:
+        (train_data, val_data) tuple
+    """
+    n = len(data_list)
+    n_val = max(1, int(n * val_ratio))
+    # Most recent data goes to validation (temporal split)
+    return data_list[:-n_val], data_list[-n_val:]
 
 
 def _simulate_vol_future(iv_points: Dict[str, float], horizon: int, regime_strength: float) -> List[float]:

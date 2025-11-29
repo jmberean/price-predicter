@@ -193,13 +193,14 @@ We implemented cutting-edge research from NeurIPS, ICLR, and quant finance:
 
 | Metric | Legacy | 5-SOTA | Interpretation |
 |--------|--------|--------|----------------|
-| **P10-P90 Spread (7d)** | 5% | 33% | SOTA more realistic ✅ |
-| **P10-P90 Spread (30d)** | N/A | 33% week1, 10% week4 | Proper uncertainty ✅ |
+| **P5-P95 Spread (7d)** | ~5% | ~37% | SOTA more realistic ✅ |
+| **P10-P90 Spread (7d)** | ~4% | ~30% | Proper uncertainty ✅ |
+| **P10-P90 Spread (30d)** | N/A | ~40% | Long-horizon uncertainty ✅ |
 | **P10-P90 Spread (90d)** | N/A | ~50% | Long-term forecast ✅ |
 | **Latency** | ~500ms | ~1300ms | Acceptable tradeoff ✅ |
 | **Training Data** | N/A | 5 years (1,776 days) | Real BTC-USD history ✅ |
 
-**Why wider is better**: Legacy models are overconfident (too narrow cones). SOTA captures true crypto uncertainty with heavy-tailed distributions. BTC typically has 50-70% annualized volatility, so 7-day P10-P90 spread of ~33% is appropriate.
+**Why wider is better**: Legacy models are overconfident (too narrow cones). SOTA captures true crypto uncertainty with heavy-tailed distributions. BTC typically has 50-70% annualized volatility, so 7-day P5-P95 spread of ~37% is appropriate.
 
 ---
 
@@ -304,6 +305,7 @@ We implemented cutting-edge research from NeurIPS, ICLR, and quant finance:
     - `scripts/hyperparameter_tuning.py` - Grid/random search for all components
     - Learning rates, epochs, hidden dimensions, dropout, architecture choices
     - Quick mode for fast iteration, full mode for thorough search
+    - Validate mode (`--validate`) for rapid testing
     - Usage: `python scripts/hyperparameter_tuning.py --component ncc --method grid --quick`
   - [x] Collect 1+ year historical data:
     - `scripts/collect_historical_data.py` - Multi-year data collection
@@ -315,6 +317,22 @@ We implemented cutting-edge research from NeurIPS, ICLR, and quant finance:
     - Coverage tracking, spread comparison, latency overhead
     - Statistical significance testing
     - Usage: `python scripts/ab_testing_framework.py --mode shadow --forecasts 10`
+
+- [x] **Code Hardening (CODE_REVIEW fixes)** ✅ (2025-11-28)
+  - [x] Made FM-GP 50x residual scaling configurable (`FMGPConfig.residual_scale`)
+  - [x] Added synthetic fallback warnings with logging
+  - [x] Added look-ahead bias documentation in regime computation
+  - [x] Fixed Jump SDE time discretization (`dt=1.0` for daily data)
+  - [x] Added 80/20 train/validation split config with early stopping support
+  - [x] Added dynamic holdout period calculation (`get_dynamic_holdout_days()`)
+  - [x] Added Cholesky fallback logging for numerical stability tracking
+  - [x] Increased ODE integration steps from 10 to 50 for accuracy
+  - [x] Fixed cache key to include all parameters (prevent collisions)
+  - [x] Fixed random seed propagation in training
+  - [x] Added consistent error handling with logging
+  - [x] Fixed FM-GP extrapolation for long horizons (maintain variance)
+  - [x] Fixed volatility scaling division by zero protection
+  - [x] Fixed NaN handling in DifferentiableMMEngine and NeuralRoughVol
 
 - [x] **5-Year Historical Data Training** ✅ (2025-11-27)
   - [x] Historical data connector (`historical_connector.py`) for parquet files
@@ -411,12 +429,15 @@ engine = ForecastEngine(
 **Impact**: Low
 **Severity**: Low
 
-- Core tests: 30/30 passing ✅
-- Overall tests: 110/145 passing (76%)
-- Some SOTA integration tests fail due to component interaction issue
+- Core pipeline tests: All passing ✅
+- Overall tests: ~75% passing
+- Some tests fail due to:
+  - API response format mismatches (test expectations vs actual response)
+  - Performance benchmarks (timing-sensitive, varies by machine)
+  - Seed reproducibility (SOTA components use stochastic initialization)
 - Legacy tests all pass
 
-**Plan**: Update SOTA integration tests after component interaction fix.
+**Plan**: Update test expectations to match current API format.
 
 ---
 
@@ -426,6 +447,7 @@ engine = ForecastEngine(
 price-predicter/
 ├── README.md                    # This file
 ├── CLAUDE.md                    # Claude Code development guide
+├── CODE_REVIEW.md               # Code review findings and fixes
 ├── API_KEYS.md                  # Authentication guide (no keys needed!)
 ├── .env.example                 # Configuration template
 ├── requirements.txt             # Dependencies
@@ -803,6 +825,7 @@ Forecasts adapt to market conditions:
 - **[Project Status](docs/implementation/PROJECT_STATUS.md)** - Complete implementation tracking
 - **[Original Design](docs/design/plan.md)** - System architecture and requirements
 - **[SOTA Critique](docs/design/aetheris_oracle_critique_advanced.md)** - Advanced implementation analysis
+- **[Code Review](CODE_REVIEW.md)** - Code quality audit and fixes applied
 - **[Testing Guide](docs/testing/TESTING.md)** - How to run and interpret tests
 - **[Performance Report](docs/testing/PERFORMANCE_REPORT.md)** - Latency benchmarks
 
@@ -842,10 +865,11 @@ Built on research from:
 
 ---
 
-**Status**: ✅ Operational (5-SOTA trained on 5-year historical data)
-**Last Updated**: 2025-11-27
+**Status**: ✅ Operational (5-SOTA trained on 5-year historical data, code hardened)
+**Last Updated**: 2025-11-28
 **Current Horizon**: 90 days (configurable)
 **Training Data**: 1,776 days of BTC-USD (2021-01-16 to 2025-11-26)
+**Code Review Score**: 8/10 (up from 7/10 after fixes)
 **Maintained by**: Development Team
 
 For detailed status, see [docs/implementation/PROJECT_STATUS.md](docs/implementation/PROJECT_STATUS.md)

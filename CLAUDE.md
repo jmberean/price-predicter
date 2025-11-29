@@ -19,92 +19,88 @@ For detailed documentation:
 - [docs/implementation/PROJECT_STATUS.md](docs/implementation/PROJECT_STATUS.md) - Implementation status
 - [docs/design/plan.md](docs/design/plan.md) - System design specification
 
-## Development Commands
+## Quick Start (Simplified)
 
-### Setup
+All config is in `.env` - copy from `.env.example` and edit as needed.
+
+### 1. Setup
 ```bash
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
-
-# Set PYTHONPATH (required for all commands)
-$env:PYTHONPATH="src"  # PowerShell
-export PYTHONPATH=src  # Bash
+copy .env.example .env   # Windows
+cp .env.example .env     # Linux/Mac
 ```
+
+### 2. Train (optional - pretrained models exist)
+```bash
+.venv\Scripts\python train.py           # Full training
+.venv\Scripts\python train.py --quick   # Quick training
+```
+
+### 3. Run
+```bash
+.venv\Scripts\python run.py             # Uses .env config
+.venv\Scripts\python run.py --legacy    # Use legacy models
+```
+
+### Key .env Settings
+```bash
+# Forecast config
+FORECAST_ASSET=BTC-USD      # Asset to forecast
+FORECAST_HORIZON=7          # Days ahead (7, 30, 90)
+FORECAST_PATHS=1000         # Monte Carlo paths
+
+# Training config
+TRAINING_HORIZON=90         # Horizon to train for
+
+# Model selection (true = SOTA, false = legacy)
+USE_NCC_CALIBRATION=true
+USE_FM_GP_RESIDUALS=true
+USE_NEURAL_JUMPS=true
+USE_DIFF_GREEKS=true
+USE_NEURAL_ROUGH_VOL=true
+USE_MAMBA_TREND=false       # Keep false - has bias issues
+```
+
+## Development Commands
 
 ### Testing
 ```bash
-# Run all tests
-.venv\Scripts\python -m pytest -q
-
-# Run single test file
-.venv\Scripts\python -m pytest tests/test_pipeline.py -v
-
-# Run single test function
-.venv\Scripts\python -m pytest tests/test_pipeline.py::test_forecast_engine_basic -v
-
-# Run with coverage
-.venv\Scripts\python -m pytest --cov=aetheris_oracle tests/
+.venv\Scripts\python -m pytest -q                                    # All tests
+.venv\Scripts\python -m pytest tests/test_pipeline.py -v             # Single file
+.venv\Scripts\python -m pytest tests/test_pipeline.py::test_name -v  # Single test
 ```
 
-### Quick Forecast (Recommended)
+### Advanced CLI
 ```bash
-# 7-day forecast with interactive chart
-.venv\Scripts\python start.py --mode forecast --asset BTC-USD --horizon 7
+# Set PYTHONPATH first
+$env:PYTHONPATH="src"  # PowerShell
+export PYTHONPATH=src  # Bash
 
-# 30-day forecast
-.venv\Scripts\python start.py --mode forecast --asset BTC-USD --horizon 30 --paths 2000
+# CLI with options
+.venv\Scripts\python -m aetheris_oracle.cli --asset BTC-USD --horizon 7 --paths 500 --plot
 
-# 90-day forecast
-.venv\Scripts\python start.py --mode forecast --asset BTC-USD --horizon 90 --paths 2000
-
-# Use legacy models
-.venv\Scripts\python start.py --mode forecast --horizon 7 --legacy
+# Alternate entry point
+.venv\Scripts\python start.py --mode forecast --asset BTC-USD --horizon 30
 ```
 
-### CLI Forecast (Advanced)
+### Training (Advanced)
 ```bash
-# Basic forecast (no API keys needed)
-.venv\Scripts\python -m aetheris_oracle.cli --asset BTC-USD --horizon 7 --paths 500
-
-# With SOTA components
-.venv\Scripts\python -m aetheris_oracle.cli --asset BTC-USD --horizon 7 \
-  --use-ncc --use-diff-greeks
-
-# With visualization
-.venv\Scripts\python -m aetheris_oracle.cli --asset BTC-USD --horizon 7 \
-  --connector free --plot --plot-save forecast.png
-```
-
-### Training SOTA Models
-```bash
-# Retrain all SOTA with 5-year historical data (recommended)
+# Retrain with historical parquet data
 .venv\Scripts\python scripts/retrain_with_historical.py --skip-mamba
 
-# Train individual component
+# Train single component
 .venv\Scripts\python -m aetheris_oracle.pipeline.train_sota --component ncc --epochs 30
-.venv\Scripts\python -m aetheris_oracle.pipeline.train_sota --component fmgp --epochs 80
 ```
-
-### Changing Forecast Horizon
-To support different horizons, update in these files:
-- `src/aetheris_oracle/modules/fm_gp_residual.py` → `FMGPConfig.horizon`
-- `src/aetheris_oracle/modules/neural_rough_vol.py` → `NeuralRoughVolConfig.horizon`
-- `src/aetheris_oracle/modules/mamba_trend.py` → `MambaTrendConfig.horizon`
-
-Then retrain: `.venv\Scripts\python scripts/retrain_with_historical.py --skip-mamba`
 
 ### Service
 ```bash
 .venv\Scripts\python -m aetheris_oracle.server
 ```
 
-### Validation & Diagnostics
+### Validation
 ```bash
-# Walk-forward validation
 .venv\Scripts\python scripts/run_validation.py --recent
-
-# Diagnose SOTA components
-.venv\Scripts\python scripts/diagnose_components.py
 ```
 
 ## Architecture

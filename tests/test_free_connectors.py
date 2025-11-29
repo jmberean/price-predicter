@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
+import math
 
 from aetheris_oracle.data.free_connectors import (
     CCXTOHLCVConnector,
     DeribitIVConnector,
+    DeribitPerpConnector,
     FreeDataConnector,
     YFinanceMacroConnector,
 )
@@ -20,16 +22,21 @@ def test_ccxt_ohlcv_connector_uses_stub_client():
     frame = connector.fetch("BTC-USD", datetime(2024, 1, 1), datetime(2024, 1, 2))
     assert frame.closes[-1] == 100.0
     assert frame.volumes[-1] == 1000.0
-    assert frame.iv_points["iv_7d_atm"] == 0.5
+    # IV defaults to NaN when not fetched from options connector
+    assert math.isnan(frame.iv_points["iv_7d_atm"])
 
 
 def test_deribit_iv_connector_parses_response(monkeypatch):
+    """Test DeribitIVConnector with DVOL API response."""
     class StubResp:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"result": {"current_volatility": 0.42}}
+            # DVOL endpoint returns data array with [timestamp, open, high, low, close]
+            return {"result": {"data": [[1700000000000, 42.0, 43.0, 41.0, 42.0]]}}
 
     class StubClient:
         def get(self, url, params):
@@ -38,7 +45,44 @@ def test_deribit_iv_connector_parses_response(monkeypatch):
     conn = DeribitIVConnector()
     conn._client = StubClient()
     ivs = conn.fetch_iv_surface("BTC-USD", datetime.utcnow())
-    assert ivs["iv_7d_atm"] == 0.42
+    # DVOL is 42%, converted to decimal = 0.42
+    # 7d is 95% of 30d, 14d is 98% of 30d
+    assert abs(ivs["iv_30d_atm"] - 0.42) < 0.001
+    assert abs(ivs["iv_7d_atm"] - 0.42 * 0.95) < 0.001
+
+
+def test_deribit_perp_connector_parses_response():
+    """Test DeribitPerpConnector with ticker API response."""
+    class StubResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "result": {
+                    "current_funding": 0.0001,  # 0.01% per 8h
+                    "mark_price": 50100.0,
+                    "index_price": 50000.0,
+                    "best_bid_amount": 100.0,
+                    "best_ask_amount": 50.0,
+                }
+            }
+
+    class StubClient:
+        def get(self, url, params):
+            return StubResp()
+
+    conn = DeribitPerpConnector()
+    conn._client = StubClient()
+    data = conn.fetch_perp_data("BTC-USD", datetime.utcnow())
+
+    # Funding rate annualized: 0.0001 * 3 * 365 = 0.1095 (10.95%)
+    assert abs(data["funding_rate"] - 0.1095) < 0.001
+
+    # Basis: (50100 - 50000) / 50000 = 0.002 (0.2%)
+    assert abs(data["basis"] - 0.002) < 0.0001
+
+    # Order imbalance: (100 - 50) / 150 = 0.333
+    assert abs(data["order_imbalance"] - 0.333) < 0.01
 
 
 def test_free_data_connector_merges_sources():
