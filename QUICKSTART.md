@@ -21,7 +21,7 @@ Done. Models are already trained in `artifacts/`.
 ## Option B: Train Fresh
 
 ```bash
-# 1. Train
+# 1. Train (uses tuned hyperparameters from .env if available)
 .venv\Scripts\python train.py
 
 # 2. Run
@@ -33,11 +33,11 @@ Done. Models are already trained in `artifacts/`.
 ## Option C: Full Optimization (Best Results)
 
 ```bash
-# 1. Tune hyperparameters (auto-updates .env)
-.venv\Scripts\python scripts/hyperparameter_tuning.py --component all --thorough
+# 1. Tune hyperparameters (auto-updates .env, use -w for parallel)
+.venv\Scripts\python scripts/hyperparameter_tuning.py --component all --quick -w 8
 
-# 2. Train with tuned settings
-.venv\Scripts\python train.py
+# 2. Train with tuned settings (use -w for parallel)
+.venv\Scripts\python train.py -w 4
 
 # 3. Run
 .venv\Scripts\python run.py
@@ -49,21 +49,22 @@ Done. Models are already trained in `artifacts/`.
 
 | Task | Command | Time |
 |------|---------|------|
-| **Run forecast** | `python run.py` | ~2 sec |
-| **Run (legacy models)** | `python run.py --legacy` | ~1 sec |
-| **Train (quick)** | `python train.py --quick` | ~5 min |
-| **Train (full)** | `python train.py` | ~30 min |
-| **Tune (quick)** | `python scripts/hyperparameter_tuning.py --component all --quick` | ~30 min |
-| **Tune (thorough)** | `python scripts/hyperparameter_tuning.py --component all --thorough` | ~3-4 hrs |
+| **Run forecast** | `.venv\Scripts\python run.py` | ~2 sec |
+| **Run (legacy models)** | `.venv\Scripts\python run.py --legacy` | ~1 sec |
+| **Train (quick)** | `.venv\Scripts\python train.py --quick` | ~5 min |
+| **Train (full)** | `.venv\Scripts\python train.py` | ~30 min |
+| **Train (parallel)** | `.venv\Scripts\python train.py -w 4` | ~15 min |
+| **Tune (quick)** | `.venv\Scripts\python scripts/hyperparameter_tuning.py --component all --quick -w 8` | ~10 min |
+| **Tune (thorough)** | `.venv\Scripts\python scripts/hyperparameter_tuning.py --component all --thorough -w 4` | ~2 hrs |
 
 ### Tuning Modes
 
-| Mode | Samples | Time Estimate |
-|------|---------|---------------|
-| `--validate` | 5 | ~1 min (just verifies it works) |
-| Default (standard) | 80 | ~1-2 hours |
-| `--quick` | 20 | ~15-20 min |
-| `--thorough` | 150 | ~3-4 hours |
+| Mode | Samples | Time Estimate | Workers |
+|------|---------|---------------|---------|
+| `--validate` | 5 | ~1 min | `-w 4` |
+| `--quick` | 25 | ~10 min | `-w 8` |
+| Default (standard) | 80 | ~30 min | `-w 4` |
+| `--thorough` | 150 | ~2 hours | `-w 4` |
 
 Tuned hyperparameters are saved to `.env` as `TUNING_*` variables and automatically used during training.
 
@@ -78,6 +79,11 @@ Edit `.env` to change settings:
 FORECAST_ASSET=BTC-USD
 FORECAST_HORIZON=7          # 7, 30, or 90 days
 FORECAST_PATHS=1000
+
+# Training data (affects train.py)
+TRAINING_LOOKBACK_DAYS=1825 # Historical data window (~5 years)
+TRAINING_HOLDOUT_DAYS=30    # Recent data excluded to prevent overfitting
+TRAINING_HORIZON=30         # Horizon to train models for
 
 # Model selection (all true = 5-SOTA, all false = legacy)
 USE_NCC_CALIBRATION=true
@@ -194,9 +200,10 @@ rm -rf artifacts/*.pt artifacts/*.json artifacts/tuning/* outputs/*
 
 | Issue | Solution |
 |-------|----------|
-| `No historical data` | Run `python scripts/collect_historical_data.py --asset BTC-USD` |
-| `Model not found` | Run `python train.py` |
+| `No historical data` | Run `.venv\Scripts\python scripts/collect_historical_data.py --asset BTC-USD` |
+| `Model not found` | Run `.venv\Scripts\python train.py` |
 | `CUDA not available` | Set `TORCH_DEVICE=cpu` in `.env` |
 | `Slow forecast` | Reduce `FORECAST_PATHS` in `.env` |
+| `Slow training` | Use parallel mode: `.venv\Scripts\python train.py -w 4` |
 | `Stale data` | Restart script (clears in-memory cache) |
 | `Want fresh models` | Delete `artifacts/*.pt` and retrain |

@@ -46,6 +46,7 @@ gpytorch>=1.11
 # Optional: MambaTS state-space models
 # Requires CUDA and may not install on all systems
 # mamba-ssm>=1.2.0
-
+ast-grep-py
+pyarrow
 # Editable install (for development)
 -e .

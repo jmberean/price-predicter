@@ -21,9 +21,9 @@ from datetime import datetime
 from pathlib import Path
 
 # Set environment variables BEFORE importing training modules
-# Use full historical data
+# Use full historical data (holdout uses .env TRAINING_HOLDOUT_DAYS)
 os.environ["TRAINING_LOOKBACK_DAYS"] = "1700"  # ~5 years
-os.environ["TRAINING_HOLDOUT_DAYS"] = "60"     # Keep 60-day holdout
+# TRAINING_HOLDOUT_DAYS from .env (default 30 days)
 os.environ["TRAINING_SAMPLES_NCC"] = "500"
 os.environ["TRAINING_SAMPLES_FMGP"] = "500"
 os.environ["TRAINING_SAMPLES_NEURAL_JUMP"] = "500"

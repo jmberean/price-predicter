@@ -1,0 +1,110 @@
+(.venv) PS C:\PC\Workspace\price-predicter> python train.py -w 8
+======================================================================
+AETHERIS ORACLE - SOTA MODEL TRAINING
+======================================================================
+  Asset:    BTC-USD
+  Horizon:  30 days
+  Device:   cpu
+  Mode:     Full
+  Workers:  8 (parallel)
+  Mamba:    Skipped (disabled in .env)
+  Tuned:    Using hyperparameters from .env
+======================================================================
+
+Updating model horizons...
+Warning: mamba-ssm not installed. Using simplified implementation.
+
+Loading historical data from data/historical...
+Loaded 1776 days of BTC-USD data
+  Period: 2021-01-18 to 2025-11-28
+Available: 1776 days (2021-01-18 to 2025-11-28)
+
+Parallel training enabled: 8 workers
+
+======================================================================
+Training 4 base components in parallel...
+======================================================================
+  Submitted: DIFF_GREEKS (40 epochs)
+  Submitted: FMGP (30 epochs)
+  Submitted: NEURAL_VOL (40 epochs)
+  Submitted: NEURAL_JUMP (70 epochs)
+Warning: mamba-ssm not installed. Using simplified implementation.
+Loaded 1776 days of BTC-USD data
+  Period: 2021-01-18 to 2025-11-28
+Training Differentiable Greeks on BTC-USD...
+Warning: mamba-ssm not installed. Using simplified implementation.
+Warning: mamba-ssm not installed. Using simplified implementation.
+Warning: mamba-ssm not installed. Using simplified implementation.
+Loaded 1776 days of BTC-USD data
+  Period: 2021-01-18 to 2025-11-28
+Training Neural Jump SDE on BTC-USD...
+Loaded 1776 days of BTC-USD data
+  Period: 2021-01-18 to 2025-11-28
+Training Neural Rough Vol on BTC-USD...
+Loaded 1776 days of BTC-USD data
+  Period: 2021-01-18 to 2025-11-28
+Training FM-GP Residuals on BTC-USD...
+Epoch 0: Loss = 0.217044
+Preparing Neural Vol training data: 500 samples from 1825 days...
+Training period: 2020-10-31 to 2025-10-30 (excluding last 30 days)
+Fetching 1915 days in single API call...
+Got 1747 days, creating training windows...
+Created 1703 training windows
+Preparing FM-GP Residual training data: 500 samples from 1825 days...
+Training period: 2020-10-31 to 2025-10-30 (excluding last 30 days)
+Fetching 1915 days in single API call...
+Preparing Neural Jump SDE training data: 300 samples from 1825 days...
+Training period: 2020-10-31 to 2025-10-30 (excluding last 30 days)
+Fetching 1915 days in single API call...
+Got 1747 days, creating training windows...
+Got 1747 days, creating training windows...
+Created 1703 training windows
+Created 1703 training windows
+Generated 300 Neural Jump SDE training samples
+Generated 500 FM-GP training samples
+Training on 500 real historical residual paths...
+Epoch 5: Loss = 0.001062
+Epoch 10: Loss = 0.000690
+Generated 500 Neural Vol training samples
+Training on 500 real historical volatility paths...
+Epoch 15: Loss = 0.001116
+Epoch 20: Loss = 0.000790
+Saved FM-GP model to artifacts\fmgp_residuals.pt
+  Completed: FMGP (5.1s)
+Epoch 25: Loss = 0.000935
+Epoch 30: Loss = 0.000447
+Epoch 35: Loss = 0.000726
+Saved Differentiable Greeks model to artifacts\diff_greeks.pt
+  Completed: DIFF_GREEKS (7.7s)
+Saved Neural Rough Vol model to artifacts\neural_rough_vol.pt
+  Completed: NEURAL_VOL (8.4s)
+Saved Neural Jump SDE model to artifacts\neural_jump_sde.pt
+  Completed: NEURAL_JUMP (121.2s)
+
+======================================================================
+Training: NCC (20 epochs) - runs last, needs other models
+======================================================================
+Training NCC Calibration on BTC-USD...
+Preparing NCC training data: 500 samples from 1825 days of history...
+Training period: 2020-10-31 to 2025-10-30 (excluding last 30 days)
+Fetching 1915 days in single API call...
+Got 1747 days, creating training windows...
+Created 1703 training windows
+Generated 499 NCC training samples
+Saved NCC model to artifacts\ncc_calibration.pt
+
+NCC: OK (719.6s)
+
+======================================================================
+TRAINING COMPLETE
+======================================================================
+Total time: 14.1 minutes
+
+  fmgp            [OK] 5.1s
+  diff_greeks     [OK] 7.7s
+  neural_vol      [OK] 8.4s
+  neural_jump     [OK] 121.2s
+  ncc             [OK] 719.6s
+
+Models saved to: artifacts/
+(.venv) PS C:\PC\Workspace\price-predicter> 

@@ -235,16 +235,22 @@ class NeuralRoughVolEngine(nn.Module):
         # Rough Bergomi: V(t) = V(0) * exp(xi * fBm(t) - 0.5 * xi^2 * t^(2H))
         t_2H = time_grid.pow(2 * self.config.hurst)
 
+        # Numerical stability: clamp past_vol to avoid log(0)
+        past_vol_clamped = torch.clamp(past_vol, min=1e-6)
+
         log_vol = (
-            torch.log(past_vol).unsqueeze(1)
+            torch.log(past_vol_clamped).unsqueeze(1)
             + xi.unsqueeze(1) * fBm
             - 0.5 * xi.unsqueeze(1).pow(2) * t_2H.unsqueeze(0)
         )
 
+        # Clamp log_vol to avoid extreme values
+        log_vol = torch.clamp(log_vol, min=-20, max=5)
+
         vol_paths = torch.exp(log_vol)
 
         # Apply forward variance adjustment
-        vol_paths = vol_paths * torch.sqrt(fwd_var.unsqueeze(1) / (past_vol.unsqueeze(1) + 1e-8))
+        vol_paths = vol_paths * torch.sqrt(torch.clamp(fwd_var.unsqueeze(1), min=1e-6) / (past_vol_clamped.unsqueeze(1) + 1e-8))
 
         return vol_paths
 
@@ -263,11 +269,19 @@ class NeuralRoughVolEngine(nn.Module):
         Returns:
             loss, metrics dict
         """
+        # Clamp values for numerical stability
+        vol_paths_clamped = torch.clamp(vol_paths, min=1e-6)
+        target_clamped = torch.clamp(target_vol_paths, min=1e-6)
+
         # Log-space MSE (more stable)
-        log_pred = torch.log(vol_paths + 1e-10)
-        log_target = torch.log(target_vol_paths + 1e-10)
+        log_pred = torch.log(vol_paths_clamped)
+        log_target = torch.log(target_clamped)
 
         loss = F.mse_loss(log_pred, log_target)
+
+        # Handle NaN loss
+        if torch.isnan(loss):
+            loss = torch.tensor(1.0, device=vol_paths.device, requires_grad=True)
 
         metrics = {
             "loss": loss.item(),
@@ -388,6 +402,47 @@ class NeuralRoughVolWrapper:
 
         return vol_forecast
 
+    def generate_vol_path(
+        self,
+        past_vol: float,
+        conditioning: Sequence[float],
+        horizon: int,
+    ) -> List[float]:
+        """
+        Generate a volatility path from past vol and conditioning.
+
+        This is a simpler interface for hyperparameter tuning validation.
+
+        Args:
+            past_vol: Starting volatility level
+            conditioning: Conditioning features
+            horizon: Number of steps to forecast
+
+        Returns:
+            List of volatility forecasts
+        """
+        import math
+        self.model.eval()
+
+        # Pad conditioning to cond_dim and replace NaN with 0
+        cond_list = list(conditioning) + [0.0] * (self.config.cond_dim - len(conditioning))
+        cond_list = cond_list[:self.config.cond_dim]
+        cond_list = [0.0 if (math.isnan(x) or math.isinf(x)) else x for x in cond_list]
+
+        # Ensure past_vol is valid
+        if math.isnan(past_vol) or math.isinf(past_vol) or past_vol <= 0:
+            past_vol = 0.2  # Default volatility
+
+        # Convert to tensors
+        past_vol_t = torch.tensor([past_vol], device=self.device, dtype=torch.float32)
+        cond_t = torch.tensor([cond_list], device=self.device, dtype=torch.float32)
+
+        # Forecast
+        with torch.no_grad():
+            vol_paths = self.model(past_vol_t, cond_t, horizon)
+
+        return vol_paths[0].cpu().numpy().tolist()
+
     def train_on_historical(
         self,
         past_vols: Sequence[float],
@@ -414,14 +469,18 @@ class NeuralRoughVolWrapper:
         n_samples = len(past_vols)
         indices = list(range(n_samples))
 
-        # Convert to tensors
-        past_vols_t = torch.tensor(past_vols, device=self.device, dtype=torch.float32)
+        import math
 
-        # Pad conditioning
+        # Convert to tensors, clamping to avoid NaN/inf
+        past_vols_clean = [max(v, 1e-6) if not (math.isnan(v) or math.isinf(v)) else 0.2 for v in past_vols]
+        past_vols_t = torch.tensor(past_vols_clean, device=self.device, dtype=torch.float32)
+
+        # Pad conditioning and clean NaN/inf values
         cond_list = []
         for cond in conditioning_sequences:
             padded = list(cond) + [0.0] * (self.config.cond_dim - len(cond))
-            cond_list.append(padded[: self.config.cond_dim])
+            cleaned = [0.0 if (math.isnan(x) or math.isinf(x)) else x for x in padded[: self.config.cond_dim]]
+            cond_list.append(cleaned)
         cond_t = torch.tensor(cond_list, device=self.device, dtype=torch.float32)
 
         # Pad target paths

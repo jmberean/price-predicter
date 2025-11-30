@@ -196,7 +196,7 @@ QUICK_SEARCH_SPACES = {
 # Number of training samples per mode
 TUNING_SAMPLES = {
     "validate": 5,
-    "quick": 20,
+    "quick": 25,  # NCC can produce fewer samples than requested due to forecast failures
     "standard": 80,
     "thorough": 150,
 }
@@ -543,10 +543,11 @@ def train_and_evaluate_neural_jump(
     with torch.no_grad():
         for i in range(len(val_paths)):
             target = torch.tensor(val_paths[i], dtype=torch.float32, device=device)
-            cond = torch.tensor(val_cond[i], dtype=torch.float32, device=device).unsqueeze(0)
             # Sample and compare
-            x0 = target[0].item()
-            generated = engine.sample_sde_paths(x0, cond, n_paths=1, horizon=len(target))
+            x0_tensor = torch.tensor([target[0].item()], device=device, dtype=torch.float32)
+            cond_list = list(val_cond[i])
+            vol_path = [0.2] * len(target)  # dummy constant volatility
+            generated = engine.sample_sde_paths(x0_tensor, cond_list, len(target), vol_path)
             mse = float(((generated.squeeze() - target) ** 2).mean())
             val_losses.append(mse)
 
@@ -675,14 +676,20 @@ def train_and_evaluate_neural_vol(
     with torch.no_grad():
         for i in range(len(val_vols)):
             target = torch.tensor(val_targets[i], dtype=torch.float32, device=device)
-            past_vol = val_vols[i]
+            past_vol = max(val_vols[i], 1e-6)  # Ensure positive volatility
             cond = torch.tensor(val_cond[i], dtype=torch.float32, device=device).unsqueeze(0)
             # Generate and compare
-            generated = wrapper.generate_vol_path(past_vol, cond.squeeze(0).tolist(), horizon=len(target))
-            gen_tensor = torch.tensor(generated, dtype=torch.float32, device=device)
-            mse = float(((gen_tensor - target) ** 2).mean())
-            val_losses.append(mse)
+            try:
+                generated = wrapper.generate_vol_path(past_vol, cond.squeeze(0).tolist(), horizon=len(target))
+                gen_tensor = torch.tensor(generated, dtype=torch.float32, device=device)
+                mse = float(((gen_tensor - target) ** 2).mean())
+                if not np.isnan(mse) and not np.isinf(mse):
+                    val_losses.append(mse)
+            except Exception:
+                pass  # Skip problematic samples
 
+    if not val_losses:
+        return float("inf"), {"error": "All validation samples failed"}
     val_loss = float(np.mean(val_losses))
     train_loss = train_metrics.get("loss", [1.0])[-1] if isinstance(train_metrics.get("loss"), list) else 1.0
 
@@ -905,9 +912,11 @@ def _train_with_prefetched_data(component: str, config: Dict, prefetched_data: D
         with torch.no_grad():
             for i in range(len(val_paths)):
                 target = torch.tensor(val_paths[i], dtype=torch.float32, device=device)
-                cond = torch.tensor(val_cond[i], dtype=torch.float32, device=device).unsqueeze(0)
-                x0 = target[0].item()
-                generated = engine.sample_sde_paths(x0, cond, n_paths=1, horizon=len(target))
+                # Sample and compare
+                x0_tensor = torch.tensor([target[0].item()], device=device, dtype=torch.float32)
+                cond_list = list(val_cond[i])
+                vol_path = [0.2] * len(target)  # dummy constant volatility
+                generated = engine.sample_sde_paths(x0_tensor, cond_list, len(target), vol_path)
                 mse = float(((generated.squeeze() - target) ** 2).mean())
                 val_losses.append(mse)
 
@@ -951,13 +960,19 @@ def _train_with_prefetched_data(component: str, config: Dict, prefetched_data: D
         with torch.no_grad():
             for i in range(len(val_vols)):
                 target = torch.tensor(val_targets[i], dtype=torch.float32, device=device)
-                past_vol = val_vols[i]
+                past_vol = max(val_vols[i], 1e-6)  # Ensure positive volatility
                 cond = torch.tensor(val_cond[i], dtype=torch.float32, device=device).unsqueeze(0)
-                generated = wrapper.generate_vol_path(past_vol, cond.squeeze(0).tolist(), horizon=len(target))
-                gen_tensor = torch.tensor(generated, dtype=torch.float32, device=device)
-                mse = float(((gen_tensor - target) ** 2).mean())
-                val_losses.append(mse)
+                try:
+                    generated = wrapper.generate_vol_path(past_vol, cond.squeeze(0).tolist(), horizon=len(target))
+                    gen_tensor = torch.tensor(generated, dtype=torch.float32, device=device)
+                    mse = float(((gen_tensor - target) ** 2).mean())
+                    if not np.isnan(mse) and not np.isinf(mse):
+                        val_losses.append(mse)
+                except Exception:
+                    pass  # Skip problematic samples
 
+        if not val_losses:
+            return float("inf"), {"error": "All validation samples failed"}
         val_loss = float(np.mean(val_losses))
         train_loss = train_metrics.get("loss", [1.0])[-1] if isinstance(train_metrics.get("loss"), list) else 1.0
         return val_loss, {"train_loss": train_loss, "val_loss": val_loss}
@@ -1340,7 +1355,10 @@ def main():
             if comp in train_functions and results.get('best_config'):
                 print(f"\n>>> Training {comp.upper()} with best hyperparameters...")
                 try:
+                    # Create connector for training
+                    train_connector = FreeDataConnector(enable_cache=True, cache_ttl_seconds=3600)
                     train_functions[comp](
+                        connector=train_connector,
                         asset_id=args.asset,
                         device=args.device,
                     )

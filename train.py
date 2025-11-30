@@ -2,8 +2,9 @@
 Simple training script - reads all config from .env file.
 
 Usage:
-    python train.py           # Train all SOTA components
-    python train.py --quick   # Quick training (fewer samples/epochs)
+    python train.py              # Train all SOTA components
+    python train.py --quick      # Quick training (fewer samples/epochs)
+    python train.py -w 4         # Parallel training with 4 workers
 
 Config is read from .env - see .env.example for all options.
 """
@@ -18,6 +19,8 @@ load_dotenv()
 import argparse
 import json
 import time
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -114,12 +117,73 @@ def update_module_horizons(horizon: int) -> None:
             print(f"  Updated horizon to {horizon} in {filepath}")
 
 
+DEFAULT_WORKERS = max(1, multiprocessing.cpu_count() // 2)
+
+
+def _train_single_component(
+    component: str,
+    epochs: int,
+    asset: str,
+    device: str,
+    data_dir: str,
+    artifact_dir: str,
+) -> dict:
+    """Worker function to train a single component."""
+    # Re-import in worker process
+    import sys
+    sys.path.insert(0, "src")
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    from pathlib import Path
+    import time
+
+    from aetheris_oracle.data.historical_connector import HistoricalParquetConnector
+    from aetheris_oracle.pipeline.train_sota import (
+        train_ncc_calibration,
+        train_fmgp_residuals,
+        train_neural_jump_sde,
+        train_differentiable_greeks,
+        train_neural_rough_vol,
+        train_mamba_trend,
+    )
+
+    train_funcs = {
+        "ncc": (train_ncc_calibration, "ncc_calibration.pt"),
+        "fmgp": (train_fmgp_residuals, "fmgp_residuals.pt"),
+        "neural_jump": (train_neural_jump_sde, "neural_jump_sde.pt"),
+        "diff_greeks": (train_differentiable_greeks, "diff_greeks.pt"),
+        "neural_vol": (train_neural_rough_vol, "neural_rough_vol.pt"),
+        "mamba": (train_mamba_trend, "mamba_trend.pt"),
+    }
+
+    try:
+        connector = HistoricalParquetConnector(data_dir=data_dir, asset_id=asset)
+        train_func, artifact_name = train_funcs[component]
+        artifact_path = Path(artifact_dir)
+
+        comp_start = time.time()
+        metrics = train_func(
+            connector=connector,
+            asset_id=asset,
+            epochs=epochs,
+            device=device,
+            artifact_path=str(artifact_path / artifact_name),
+        )
+        comp_time = time.time() - comp_start
+        return {"component": component, "status": "success", "time": comp_time}
+    except Exception as e:
+        return {"component": component, "status": "failed", "error": str(e), "time": 0}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train SOTA models (config from .env)")
     parser.add_argument("--quick", action="store_true", help="Quick training (fewer samples/epochs)")
     parser.add_argument("--component", type=str, default="all",
                         choices=["all", "ncc", "fmgp", "neural_jump", "diff_greeks", "neural_vol", "mamba"],
                         help="Component to train (default: all)")
+    parser.add_argument("-w", "--workers", type=int, default=1,
+                        help=f"Number of parallel workers (default: 1, max recommended: {DEFAULT_WORKERS})")
     args = parser.parse_args()
 
     # Read config from .env
@@ -153,6 +217,7 @@ def main():
     print(f"  Horizon:  {horizon} days")
     print(f"  Device:   {device}")
     print(f"  Mode:     {'Quick' if args.quick else 'Full'}")
+    print(f"  Workers:  {args.workers} {'(parallel)' if args.workers > 1 else '(sequential)'}")
     print(f"  Mamba:    {'Skipped (disabled in .env)' if skip_mamba else 'Enabled'}")
 
     # Check if tuned hyperparameters exist
@@ -223,33 +288,95 @@ def main():
     results = {}
     training_start = time.time()
 
-    for component in components:
-        epochs = get_epochs(component)
-        train_func, artifact_name = train_funcs[component]
-        comp_tuned = tuned.get(component, {})
+    # Parallel training support
+    n_workers = args.workers
+    if n_workers > 1 and args.component == "all":
+        print(f"\nParallel training enabled: {n_workers} workers")
 
-        print(f"\n{'='*70}")
-        print(f"Training: {component.upper()} ({epochs} epochs)")
-        if comp_tuned and not args.quick:
-            print(f"  Hyperparams: lr={comp_tuned.get('learning_rate', 'default')}, hidden={comp_tuned.get('hidden_dim', comp_tuned.get('embed_dim', comp_tuned.get('time_embed_dim', 'default')))}")
-        print(f"{'='*70}")
+        # NCC must run last (depends on other models), so train base models in parallel first
+        base_components = [c for c in components if c != "ncc"]
+        ncc_component = "ncc" if "ncc" in components else None
 
-        comp_start = time.time()
-        try:
-            metrics = train_func(
-                connector=connector,
-                asset_id=asset,
-                epochs=epochs,
-                device=device,
-                artifact_path=str(artifact_path / artifact_name),
-            )
-            comp_time = time.time() - comp_start
-            results[component] = {"status": "success", "time": comp_time}
-            print(f"\n{component.upper()}: OK ({comp_time:.1f}s)")
-        except Exception as e:
-            comp_time = time.time() - comp_start
-            results[component] = {"status": "failed", "error": str(e), "time": comp_time}
-            print(f"\n{component.upper()}: FAILED - {e}")
+        # Train base components in parallel
+        if base_components:
+            print(f"\n{'='*70}")
+            print(f"Training {len(base_components)} base components in parallel...")
+            print(f"{'='*70}")
+
+            with ProcessPoolExecutor(max_workers=min(n_workers, len(base_components))) as executor:
+                futures = {}
+                for comp in base_components:
+                    epochs = get_epochs(comp)
+                    future = executor.submit(
+                        _train_single_component,
+                        comp, epochs, asset, device, data_dir, artifact_dir
+                    )
+                    futures[future] = comp
+                    print(f"  Submitted: {comp.upper()} ({epochs} epochs)")
+
+                for future in as_completed(futures):
+                    result = future.result()
+                    comp = result["component"]
+                    if result["status"] == "success":
+                        results[comp] = {"status": "success", "time": result["time"]}
+                        print(f"  Completed: {comp.upper()} ({result['time']:.1f}s)")
+                    else:
+                        results[comp] = {"status": "failed", "error": result.get("error", "unknown"), "time": 0}
+                        print(f"  Failed: {comp.upper()} - {result.get('error', 'unknown')}")
+
+        # Train NCC last (needs other models to exist)
+        if ncc_component:
+            epochs = get_epochs("ncc")
+            print(f"\n{'='*70}")
+            print(f"Training: NCC ({epochs} epochs) - runs last, needs other models")
+            print(f"{'='*70}")
+
+            comp_start = time.time()
+            try:
+                train_func, artifact_name = train_funcs["ncc"]
+                metrics = train_func(
+                    connector=connector,
+                    asset_id=asset,
+                    epochs=epochs,
+                    device=device,
+                    artifact_path=str(artifact_path / artifact_name),
+                )
+                comp_time = time.time() - comp_start
+                results["ncc"] = {"status": "success", "time": comp_time}
+                print(f"\nNCC: OK ({comp_time:.1f}s)")
+            except Exception as e:
+                comp_time = time.time() - comp_start
+                results["ncc"] = {"status": "failed", "error": str(e), "time": comp_time}
+                print(f"\nNCC: FAILED - {e}")
+    else:
+        # Sequential training (original behavior)
+        for component in components:
+            epochs = get_epochs(component)
+            train_func, artifact_name = train_funcs[component]
+            comp_tuned = tuned.get(component, {})
+
+            print(f"\n{'='*70}")
+            print(f"Training: {component.upper()} ({epochs} epochs)")
+            if comp_tuned and not args.quick:
+                print(f"  Hyperparams: lr={comp_tuned.get('learning_rate', 'default')}, hidden={comp_tuned.get('hidden_dim', comp_tuned.get('embed_dim', comp_tuned.get('time_embed_dim', 'default')))}")
+            print(f"{'='*70}")
+
+            comp_start = time.time()
+            try:
+                metrics = train_func(
+                    connector=connector,
+                    asset_id=asset,
+                    epochs=epochs,
+                    device=device,
+                    artifact_path=str(artifact_path / artifact_name),
+                )
+                comp_time = time.time() - comp_start
+                results[component] = {"status": "success", "time": comp_time}
+                print(f"\n{component.upper()}: OK ({comp_time:.1f}s)")
+            except Exception as e:
+                comp_time = time.time() - comp_start
+                results[component] = {"status": "failed", "error": str(e), "time": comp_time}
+                print(f"\n{component.upper()}: FAILED - {e}")
 
     # Summary
     total_time = time.time() - training_start

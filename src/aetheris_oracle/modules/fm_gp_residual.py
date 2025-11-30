@@ -468,11 +468,18 @@ class FMGPResidualEngine:
                     import random
                     diffusion = random.gauss(0, 0.01) * (steps_beyond ** 0.5)
                     base_residual = last_val * mean_reversion + diffusion
-                # Scale the FM-GP residual by volatility to match legacy magnitude
-                # residual_scale is configurable (default 50.0, derived from empirical calibration)
-                scaled_residual = base_residual * (1.0 + vol_scale * self.config.residual_scale)
+                # Scale the FM-GP residual by volatility (FIXED: removed 1.0+ bias)
+                # residual_scale is configurable (default 50.0)
+                scaled_residual = base_residual * vol_scale * self.config.residual_scale
                 scaled_path.append(scaled_residual)
             paths_list.append(scaled_path)
+
+        # CRITICAL: Enforce zero-mean constraint on residuals
+        # Residuals should not introduce directional bias
+        for t in range(horizon):
+            mean_at_t = sum(paths_list[p][t] for p in range(len(paths_list))) / len(paths_list)
+            for p in range(len(paths_list)):
+                paths_list[p][t] -= mean_at_t
 
         return paths_list
 

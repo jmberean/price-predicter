@@ -301,7 +301,9 @@ class NeuralJumpSDE(nn.Module):
 
         # Trajectory matching loss (simplified - using endpoint + intermediate points)
         simulated_trimmed = simulated[:, : n_steps + 1, :]
-        trajectory_loss = F.mse_loss(simulated_trimmed[:, 1:, :], observed_paths[:, 1:, :])
+        # Ensure both tensors have the same length (handle off-by-one issues)
+        min_len = min(simulated_trimmed.shape[1], observed_paths.shape[1])
+        trajectory_loss = F.mse_loss(simulated_trimmed[:, 1:min_len, :], observed_paths[:, 1:min_len, :])
 
         total_loss = trajectory_loss
         metrics = {"trajectory_loss": trajectory_loss.item()}

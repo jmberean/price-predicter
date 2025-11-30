@@ -123,9 +123,9 @@ except Exception as e:
     print(f"\n❌ NCC backtest failed: {e}")
     result_ncc = None
 
-# Test 3: Full SOTA
+# Test 3: Full SOTA (5-component recommended config)
 print("\n" + "=" * 70)
-print("[3/3] Backtesting Full SOTA (All 6 Components)...")
+print("[3/3] Backtesting Full 5-SOTA (without Mamba)...")
 print("=" * 70)
 
 engine_full = ForecastEngine(
@@ -135,14 +135,13 @@ engine_full = ForecastEngine(
     use_diff_greeks=True,
     use_fm_gp_residuals=True,
     use_neural_rough_vol=True,
-    use_neural_jumps=True,  # Now integrated!
-    use_mamba_trend=True,
+    use_neural_jumps=True,
+    use_mamba_trend=False,  # Disabled - has directional bias issues
     ncc_artifact_path="artifacts/ncc_calibration.pt",
     diff_greeks_artifact_path="artifacts/diff_greeks.pt",
     fmgp_artifact_path="artifacts/fmgp_residuals.pt",
     neural_vol_artifact_path="artifacts/neural_rough_vol.pt",
     neural_jump_artifact_path="artifacts/neural_jump_sde.pt",
-    mamba_artifact_path="artifacts/mamba_trend.pt",
 )
 
 try:
